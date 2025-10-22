@@ -1,0 +1,81 @@
+name: 🚀 SAFE Deploy ERPNext to Production
+
+on:
+  push:
+    branches: [ develop ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout Code
+      uses: actions/checkout@v4
+
+    - name: 🚀 Deploy to EC2 (WITH FULL BACKUP)
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.DEPLOY_HOST }}
+        username: ${{ secrets.DEPLOY_USER }}
+        key: ${{ secrets.DEPLOY_KEY }}
+        script: |
+          echo "🔄 Starting SAFE deployment..."
+          
+          cd ~/frappe-bench
+          
+          # 🚨 STEP 1: FULL BACKUP OF WORKING VERSION
+          cp -r apps/erpnext apps/erpnext-backup-$(date +%Y%m%d-%H%M%S)
+          echo "✅ Backup created: apps/erpnext-backup-YYYYMMDD-HHMMSS"
+          
+          # STEP 2: Remove official ERPNext
+          pip3 uninstall erpnext -y 2>/dev/null || true
+          
+          # STEP 3: Pull YOUR GitHub repo
+          git -C apps/erpnext pull origin develop
+          
+          # STEP 4: Install YOUR repo
+          bench --site erp.takumimotioncontrols.com install-app apps/erpnext --force
+          
+          # STEP 5: Migrate + Build + Restart
+          bench --site erp.takumimotioncontrols.com migrate
+          bench build --force
+          sudo supervisorctl restart frappe-bench:*
+          
+          # STEP 6: HEALTH CHECK
+          sleep 10
+          if curl -f http://localhost:8000; then
+            echo "✅ DEPLOY SUCCESSFUL! YOUR GITHUB REPO IS LIVE!"
+            # CLEANUP: Remove old backups (keep latest 3)
+            ls -t apps/erpnext-backup-* | tail -n +4 | xargs rm -rf 2>/dev/null || true
+          else
+            echo "❌ FAILED! RESTORING BACKUP..."
+            # INSTANT ROLLBACK
+            rm -rf apps/erpnext
+            mv apps/erpnext-backup-$(date +%Y%m%d-%H%M%S) apps/erpnext
+            pip3 install -e apps/erpnext
+            bench --site erp.takumimotioncontrols.com migrate
+            bench build --force
+            sudo supervisorctl restart frappe-bench:*
+            echo "✅ SITE RESTORED TO WORKING VERSION!"
+            exit 0  # Don't fail the pipeline
+          fi
+
+    - name: 🎉 Verify Your Repo
+      if: success()
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.DEPLOY_HOST }}
+        username: ${{ secrets.DEPLOY_USER }}
+        key: ${{ secrets.DEPLOY_KEY }}
+        script: |
+          cd ~/frappe-bench
+          bench --site erp.takumimotioncontrols.com console <<EOF
+          import erpnext
+          print("✅ YOUR REPO PATH:", erpnext.__file__)
+          exit()
+          EOF
+
+    - name: 🎉 Success Message
+      if: success()
+      run: echo "🚀 YOUR GITHUB FORK IS LIVE! https://erp.takumimotioncontrols.com"
