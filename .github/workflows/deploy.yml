@@ -1,8 +1,6 @@
 name: 🚀 SAFE Deploy ERPNext to Production
 
 on:
-  push:
-    branches: [ develop ]
   workflow_dispatch:
 
 jobs:
